@@ -1,15 +1,17 @@
-// Centralized configuration for Backend API & Socket.IO URL
-// Works seamlessly in both local development and production environments.
+// Centralized configuration for Backend API & Socket.IO URL.
+// Production values should be supplied via VITE_API_URL; local development falls back to localhost.
 
 export const getBackendUrl = () => {
-  if (import.meta.env.VITE_BACKEND_URL) {
-    return import.meta.env.VITE_BACKEND_URL;
+  const configuredUrl = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL;
+
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/$/, '');
   }
-  // If running in production mode or served via reverse proxy (e.g. Docker Nginx on port 80/443)
-  if (import.meta.env.PROD && typeof window !== 'undefined' && window.location.port !== '5173') {
-    return window.location.origin;
+
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return window.location.origin.replace(/\/$/, '');
   }
-  // Default for local development
+
   return 'http://localhost:5000';
 };
 

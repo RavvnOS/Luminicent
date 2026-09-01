@@ -283,6 +283,11 @@
   border-color: var(--primary);
 }
 
+.repo-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .repo-list {
   max-height: 280px;
   overflow-y: auto;
@@ -291,6 +296,27 @@
   gap: 10px;
   margin-top: 10px;
   padding-right: 4px;
+}
+
+.repo-item.selected {
+  border-color: var(--primary);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.selected-repo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dark-border);
+}
+
+.selected-repo-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
 }
 
 /* Custom Scrollbar for repository list */
