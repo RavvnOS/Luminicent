@@ -2,9 +2,8 @@ import express from 'express';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import AdmZip from 'adm-zip';
-import passport from 'passport';
-import { Strategy as GitHubStrategy } from 'passport-github2';
 import axios from 'axios';
 import {
   normalizeRepoRoot,
@@ -15,49 +14,89 @@ import {
 import { analyzeProduction } from '../utils/productionAnalyzer.js';
 
 const router = express.Router();
+const oauthStateStore = new Map();
+const STATE_TTL_MS = 10 * 60 * 1000;
+
+const getCookieValue = (req, name) => {
+  const cookieHeader = req.headers.cookie || '';
+  const cookie = cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+  return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : null;
+};
+
+const clearCookie = (res, name, options = {}) => {
+  if (!res || typeof res.clearCookie !== 'function') return;
+  res.clearCookie(name, {
+    httpOnly: true,
+    sameSite: process.env.SESSION_SAME_SITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    ...options
+  });
+};
+
+const setGithubStateCookie = (res, value) => {
+  res.cookie('luminicent_github_state', value, {
+    httpOnly: true,
+    sameSite: process.env.SESSION_SAME_SITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
+    secure: process.env.NODE_ENV === 'production',
+    path: '/'
+  });
+};
 
 const getGithubConfig = (req) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET;
 
   const host = req ? (req.get('x-forwarded-host') || req.get('host')) : null;
-  const protocol = req ? (req.get('x-forwarded-proto') || req.protocol) : 'http';
+  const protocol = req ? (req.get('x-forwarded-proto') || req.protocol || 'http') : 'http';
   const basePath = req && req.baseUrl ? req.baseUrl : '/api/github';
 
-  const defaultCallback = host ? `${protocol}://${host}${basePath}/callback` : `http://localhost:5000${basePath}/callback`;
-  const redirectUri = process.env.GITHUB_REDIRECT_URI || defaultCallback;
-
-  const defaultFrontend = host ? `${protocol}://${host.replace(':5000', ':5173')}` : 'http://localhost:5173';
+  const callbackUrl = process.env.GITHUB_CALLBACK_URL || process.env.GITHUB_REDIRECT_URI || (host ? `${protocol}://${host}${basePath}/callback` : 'http://localhost:5000/api/github/callback');
+  const defaultFrontend = host ? `${protocol}://${host.replace(/:5000$/, ':5173')}` : 'http://localhost:5173';
   const frontendUrl = process.env.FRONTEND_URL || defaultFrontend;
 
-  return { clientId, clientSecret, redirectUri, frontendUrl };
+  return { clientId, clientSecret, callbackUrl, frontendUrl };
 };
 
-const initialConfig = getGithubConfig();
-if (initialConfig.clientId && initialConfig.clientId !== 'your_github_client_id_here') {
-  passport.use(new GitHubStrategy({
-      clientID: initialConfig.clientId,
-      clientSecret: initialConfig.clientSecret,
-      callbackURL: initialConfig.redirectUri
-    },
-    function(accessToken, refreshToken, profile, done) {
-      profile.accessToken = accessToken;
-      return done(null, profile);
-    }
-  ));
-} else {
-  passport.use(new GitHubStrategy({
-      clientID: 'dummy_id',
-      clientSecret: 'dummy_secret',
-      callbackURL: 'http://localhost:5000/api/github/callback'
-    },
-    function(accessToken, refreshToken, profile, done) {
-      return done(null, profile);
-    }
-  ));
-}
+const getGithubAuthHeaders = (token) => ({
+  Authorization: `Bearer ${token}`,
+  Accept: 'application/vnd.github+json',
+  'User-Agent': 'Luminicent',
+  'X-GitHub-Api-Version': '2022-11-28'
+});
 
-// Helper to make GET requests to GitHub API
+const getGithubSession = (req) => {
+  if (!req || !req.session || !req.session.githubAuth || !req.session.githubAuth.accessToken) {
+    return null;
+  }
+  return req.session.githubAuth;
+};
+
+const destroyGithubSession = (req, res) => {
+  if (req && req.session) {
+    delete req.session.githubAuth;
+    req.session.save(() => {});
+    req.session.destroy(() => {});
+  }
+  if (res && typeof res.clearCookie === 'function') {
+    clearCookie(res, process.env.SESSION_COOKIE_NAME || 'luminicent_session');
+    clearCookie(res, 'luminicent_github_session');
+    clearCookie(res, 'luminicent_github_state');
+  }
+};
+
+const pruneStateStore = () => {
+  const now = Date.now();
+  for (const [state, timestamp] of oauthStateStore.entries()) {
+    if (now - timestamp > STATE_TTL_MS) {
+      oauthStateStore.delete(state);
+    }
+  }
+};
+
 function getGithubJson(url, token) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -67,7 +106,7 @@ function getGithubJson(url, token) {
       method: 'GET',
       headers: {
         'Accept': 'application/vnd.github+json',
-        'User-Agent': 'DevOps-Deployment-Simulator',
+        'User-Agent': 'Luminicent',
         'X-GitHub-Api-Version': '2022-11-28'
       }
     };
@@ -89,21 +128,22 @@ function getGithubJson(url, token) {
             try {
               const errObj = JSON.parse(responseBody);
               errorMsg = errObj.message || errorMsg;
-            } catch (e) {}
+            } catch (error) {
+              // Ignore parse errors and fall back to the HTTP status message.
+            }
             reject(new Error(errorMsg));
           }
-        } catch (e) {
-          reject(new Error(`Failed to parse response: ${responseBody.substring(0, 100)}`));
+        } catch (error) {
+          reject(new Error(`Failed to parse GitHub response: ${responseBody.substring(0, 200)}`));
         }
       });
     });
 
-    req.on('error', (err) => reject(err));
+    req.on('error', (error) => reject(error));
     req.end();
   });
 }
 
-// Helper to download the zipball (follows redirects)
 function downloadZipball(url, destPath, token) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -112,7 +152,7 @@ function downloadZipball(url, destPath, token) {
       path: urlObj.pathname + urlObj.search,
       method: 'GET',
       headers: {
-        'User-Agent': 'DevOps-Deployment-Simulator',
+        'User-Agent': 'Luminicent',
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28'
       }
@@ -122,9 +162,13 @@ function downloadZipball(url, destPath, token) {
     }
 
     const req = https.request(options, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        // Follow redirect
-        downloadZipball(res.headers.location, destPath, token)
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        const nextUrl = res.headers.location;
+        if (!nextUrl) {
+          reject(new Error('GitHub redirect was missing a Location header.'));
+          return;
+        }
+        downloadZipball(nextUrl, destPath, token)
           .then(resolve)
           .catch(reject);
         return;
@@ -132,13 +176,17 @@ function downloadZipball(url, destPath, token) {
 
       if (res.statusCode !== 200) {
         let responseBody = '';
-        res.on('data', (chunk) => { responseBody += chunk; });
+        res.on('data', (chunk) => {
+          responseBody += chunk;
+        });
         res.on('end', () => {
-          let errorMsg = `GitHub Download error: ${res.statusCode}`;
+          let errorMsg = `GitHub download error: ${res.statusCode}`;
           try {
             const errObj = JSON.parse(responseBody);
             errorMsg = errObj.message || errorMsg;
-          } catch (e) {}
+          } catch (error) {
+            // Ignore parse errors and fall back to the HTTP status message.
+          }
           reject(new Error(errorMsg));
         });
         return;
@@ -152,22 +200,21 @@ function downloadZipball(url, destPath, token) {
         resolve(destPath);
       });
 
-      fileStream.on('error', (err) => {
+      fileStream.on('error', (error) => {
         fs.unlink(destPath, () => {});
-        reject(err);
+        reject(error);
       });
     });
 
-    req.on('error', (err) => {
+    req.on('error', (error) => {
       fs.unlink(destPath, () => {});
-      reject(err);
+      reject(error);
     });
 
     req.end();
   });
 }
 
-// Helper to cleanup directories
 const cleanupPath = (targetPath) => {
   if (!targetPath) return;
   try {
@@ -179,171 +226,258 @@ const cleanupPath = (targetPath) => {
   }
 };
 
-// Route: Redirect to GitHub authorize page
+const handleGithubApiError = (error, fallbackMessage) => {
+  const status = error?.response?.status;
+  const message = error?.response?.data?.message || fallbackMessage;
+
+  if (status === 401 || status === 403) {
+    return new Error('GitHub session expired or is no longer authorized. Please log in again.');
+  }
+
+  if (status === 429) {
+    return new Error('GitHub API rate limit reached. Please try again shortly.');
+  }
+
+  if (message && typeof message === 'string') {
+    return new Error(message);
+  }
+
+  return new Error(fallbackMessage);
+};
+
 router.get('/login', (req, res) => {
-  const { clientId, redirectUri, frontendUrl } = getGithubConfig(req);
+  const { clientId, callbackUrl, frontendUrl } = getGithubConfig(req);
+
   if (!clientId || clientId === 'your_github_client_id_here') {
-    const errorMessage = encodeURIComponent('GitHub OAuth is not configured on the server. Please configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in environment variables.');
+    const errorMessage = encodeURIComponent('GitHub OAuth is not configured on this server. Add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to the backend environment.');
     return res.redirect(`${frontendUrl}/?github_error=${errorMessage}`);
   }
 
-  let githubURL = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo`;
-  
-  // Only attach redirect_uri if explicitly requested via query param or if STRICT_REDIRECT_URI is set.
-  // Omitting redirect_uri allows GitHub to use the callback URL registered in the OAuth app settings on github.com.
-  if (req.query.redirect_uri) {
-    githubURL += `&redirect_uri=${encodeURIComponent(req.query.redirect_uri)}`;
-  } else if (process.env.STRICT_REDIRECT_URI === 'true' && process.env.GITHUB_REDIRECT_URI) {
-    githubURL += `&redirect_uri=${encodeURIComponent(process.env.GITHUB_REDIRECT_URI)}`;
-  }
+  pruneStateStore();
+  const state = crypto.randomBytes(18).toString('hex');
+  oauthStateStore.set(state, Date.now());
+  setGithubStateCookie(res, state);
 
-  console.log('Redirecting to GitHub OAuth:', githubURL);
-  res.redirect(githubURL);
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: callbackUrl,
+    scope: 'repo read:user',
+    state,
+    allow_signup: 'true'
+  });
+
+  res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
 });
 
-// Route: Handle GitHub redirect callback
 router.get('/callback', async (req, res) => {
-  const { code } = req.query;
-  const { clientId, clientSecret, redirectUri, frontendUrl } = getGithubConfig(req);
+  const { code, state } = req.query;
+  const { clientId, clientSecret, callbackUrl, frontendUrl } = getGithubConfig(req);
+  const cookieState = getCookieValue(req, 'luminicent_github_state');
+
+  destroyGithubSession(req, res);
 
   if (!clientId || clientId === 'your_github_client_id_here' || !clientSecret) {
-    const errorMessage = encodeURIComponent('GitHub OAuth client credentials are missing or invalid.');
-    if (req.headers.accept?.includes('application/json')) {
-      return res.status(400).json({ error: 'GitHub OAuth client credentials are missing or invalid.' });
-    }
+    const errorMessage = encodeURIComponent('GitHub OAuth credentials are missing or invalid on the server.');
     return res.redirect(`${frontendUrl}/?github_error=${errorMessage}`);
   }
 
   if (!code) {
-    const errorMessage = encodeURIComponent('Authorization code is required.');
-    if (req.headers.accept?.includes('application/json')) {
-      return res.status(400).json({ error: 'Authorization code is required.' });
-    }
-    return res.redirect(`${frontendUrl}/?github_error=${errorMessage}`);
+    return res.redirect(`${frontendUrl}/?github_error=${encodeURIComponent('GitHub authorization code is required.')}`);
   }
 
+  pruneStateStore();
+  if (!state || !cookieState || state !== cookieState || !oauthStateStore.has(String(state))) {
+    return res.redirect(`${frontendUrl}/?github_error=${encodeURIComponent('GitHub login failed: state validation mismatch.')}`);
+  }
+
+  oauthStateStore.delete(String(state));
+
   try {
-    let tokenResponse;
-    // 1st attempt: exchange code without redirect_uri (works when redirect_uri was omitted during authorize)
-    tokenResponse = await axios.post('https://github.com/login/oauth/access_token', {
+    const tokenResponse = await axios.post('https://github.com/login/oauth/access_token', {
       client_id: clientId,
       client_secret: clientSecret,
-      code
+      code,
+      redirect_uri: callbackUrl
     }, {
-      headers: { Accept: 'application/json' }
-    });
-
-    // 2nd attempt: if GitHub requires matching redirect_uri, try passing redirectUri
-    if (tokenResponse.data.error && redirectUri) {
-      console.log('Initial token exchange note:', tokenResponse.data.error, '- retrying with redirect_uri');
-      const retryResponse = await axios.post('https://github.com/login/oauth/access_token', {
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        redirect_uri: redirectUri
-      }, {
-        headers: { Accept: 'application/json' }
-      });
-      if (!retryResponse.data.error) {
-        tokenResponse = retryResponse;
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Luminicent'
       }
-    }
-
-    console.log('TOKEN RESPONSE:', tokenResponse.data);
+    });
 
     if (tokenResponse.data.error) {
       throw new Error(tokenResponse.data.error_description || tokenResponse.data.error);
     }
 
-    const token = tokenResponse.data.access_token;
-    if (!token) {
+    const accessToken = tokenResponse.data.access_token;
+    if (!accessToken) {
       throw new Error('GitHub did not return an access token.');
     }
 
-    if (req.headers.accept?.includes('application/json')) {
-      return res.json({ success: true, token });
-    }
+    const userResponse = await axios.get('https://api.github.com/user', {
+      headers: getGithubAuthHeaders(accessToken)
+    });
 
-    res.redirect(`${frontendUrl}/?github_token=${encodeURIComponent(token)}`);
+    req.session.githubAuth = {
+      accessToken,
+      login: userResponse.data.login,
+      avatarUrl: userResponse.data.avatar_url,
+      name: userResponse.data.name,
+      id: userResponse.data.id,
+      scopes: tokenResponse.data.scope || 'repo read:user'
+    };
+
+    await new Promise((resolve, reject) => {
+      req.session.save((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+
+    return res.redirect(`${frontendUrl}/?github_status=success`);
   } catch (error) {
-    console.error('OAuth Callback Error:', error);
-    const errorMessage = error.message || 'Unknown OAuth callback error';
-    if (req.headers.accept?.includes('application/json')) {
-      return res.status(500).json({ error: errorMessage });
-    }
-    res.redirect(`${frontendUrl}/?github_error=${encodeURIComponent(errorMessage)}`);
+    console.error('GitHub OAuth callback error:', error.response?.data || error.message);
+    const message = error.response?.data?.error_description || error.response?.data?.message || error.message || 'Unable to complete GitHub login.';
+    return res.redirect(`${frontendUrl}/?github_error=${encodeURIComponent(message)}`);
   }
 });
 
-// Route: Fetch current user profile
+router.post('/logout', (req, res) => {
+  destroyGithubSession(req, res);
+  return res.json({ success: true, message: 'GitHub session cleared.' });
+});
+
+router.get('/logout', (req, res) => {
+  return router.handle({ ...req, method: 'POST' }, res);
+});
+
 router.get('/user', async (req, res) => {
-  const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
-  if (!token) {
-    return res.status(401).json({ error: 'Authorization token required' });
+  const session = getGithubSession(req);
+
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated with GitHub.' });
   }
 
   try {
-    const userData = await getGithubJson('https://api.github.com/user', token);
-    res.json(userData);
+    const response = await axios.get('https://api.github.com/user', {
+      headers: getGithubAuthHeaders(session.accessToken)
+    });
+
+    return res.json({
+      id: response.data.id,
+      login: response.data.login,
+      name: response.data.name,
+      avatar_url: response.data.avatar_url,
+      html_url: response.data.html_url,
+      type: response.data.type
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    destroyGithubSession(req, res);
+    return res.status(401).json({ error: 'GitHub session expired or was revoked.' });
   }
 });
 
-// Route: List repositories
 router.get('/repos', async (req, res) => {
-  const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
-  if (!token) {
-    return res.status(401).json({ error: 'Authorization token required' });
+  const session = getGithubSession(req);
+
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated with GitHub.' });
   }
 
   try {
-    const repos = await getGithubJson('https://api.github.com/user/repos?per_page=100&sort=updated', token);
-    res.json(repos);
+    const page = Math.max(1, Number(req.query.page || 1));
+    const perPage = Math.min(100, Math.max(1, Number(req.query.per_page || 30)));
+
+    const response = await axios.get(`https://api.github.com/user/repos?per_page=${perPage}&page=${page}&sort=updated`, {
+      headers: getGithubAuthHeaders(session.accessToken)
+    });
+
+    const repos = response.data.map((repo) => ({
+      id: repo.id,
+      name: repo.name,
+      full_name: repo.full_name,
+      private: repo.private,
+      default_branch: repo.default_branch,
+      html_url: repo.html_url,
+      description: repo.description,
+      owner: {
+        login: repo.owner?.login || null
+      }
+    }));
+
+    return res.json(repos);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    const message = handleGithubApiError(error, 'Unable to load GitHub repositories.');
+    if (error?.response?.status === 401) {
+      destroyGithubSession(req, res);
+    }
+    return res.status(error?.response?.status === 401 ? 401 : 500).json({ error: message.message });
   }
 });
 
-// Route: List branches of a repo
 router.get('/branches', async (req, res) => {
-  const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
+  const session = getGithubSession(req);
   const { owner, repo } = req.query;
 
   if (!owner || !repo) {
-    return res.status(400).json({ error: 'owner and repo parameters are required' });
+    return res.status(400).json({ error: 'owner and repo query parameters are required.' });
   }
 
-  if (!token) {
-    return res.status(401).json({ error: 'Authorization token required' });
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated with GitHub.' });
   }
 
   try {
-    const branches = await getGithubJson(`https://api.github.com/repos/${owner}/${repo}/branches`, token);
-    res.json(branches);
+    const repoMeta = await axios.get(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: getGithubAuthHeaders(session.accessToken)
+    });
+
+    if (!repoMeta.data?.default_branch) {
+      return res.status(404).json({ error: 'Repository metadata is unavailable.' });
+    }
+
+    const branchesResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/branches`, {
+      headers: getGithubAuthHeaders(session.accessToken)
+    });
+
+    return res.json(branchesResponse.data.map((branch) => ({
+      name: branch.name,
+      protected: branch.protected,
+      default: branch.name === repoMeta.data.default_branch
+    })));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    const message = handleGithubApiError(error, 'Unable to load repository branches.');
+    if (error?.response?.status === 401) {
+      destroyGithubSession(req, res);
+    }
+    return res.status(error?.response?.status === 401 ? 401 : 500).json({ error: message.message });
   }
 });
 
-// Route: Download repo zipball, extract, build and run container simulation
 router.post('/deploy', async (req, res) => {
-  const { owner, repo, branch, token } = req.body;
+  const session = getGithubSession(req);
+  const { owner, repo, branch, sessionId: providedSessionId } = req.body;
+
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated with GitHub.' });
+  }
+
   if (!owner || !repo || !branch) {
-    return res.status(400).json({ error: 'owner, repo, and branch are required' });
+    return res.status(400).json({ error: 'owner, repo, and branch are required.' });
   }
 
-  let cleanOwner, cleanRepo
+  let cleanOwner, cleanRepo;
   try {
-    ({ owner: cleanOwner, repo: cleanRepo } = validateGithubRepo(owner, repo))
+    ({ owner: cleanOwner, repo: cleanRepo } = validateGithubRepo(owner, repo));
   } catch (validationError) {
-    return res.status(400).json({ error: validationError.message })
+    return res.status(400).json({ error: validationError.message });
   }
 
-  const sessionId = req.body.sessionId || Date.now().toString();
+  const sessionId = providedSessionId || Date.now().toString();
   const zipPath = path.join('uploads', `${sessionId}.zip`);
   const extractPath = path.join('uploads', sessionId);
   const dockerOrchestrator = req.orchestrator;
+
   dockerOrchestrator.createSession(sessionId, {
     owner: cleanOwner,
     repo: cleanRepo,
@@ -352,6 +486,14 @@ router.post('/deploy', async (req, res) => {
   });
 
   try {
+    const repoMeta = await axios.get(`https://api.github.com/repos/${cleanOwner}/${cleanRepo}`, {
+      headers: getGithubAuthHeaders(session.accessToken)
+    });
+
+    if (!repoMeta.data || repoMeta.data.private === true && repoMeta.data.permissions?.pull !== true) {
+      throw new Error('This repository is not accessible with the current GitHub authorization.');
+    }
+
     fs.mkdirSync(path.dirname(zipPath), { recursive: true });
 
     dockerOrchestrator.emitStatus(sessionId, {
@@ -363,7 +505,7 @@ router.post('/deploy', async (req, res) => {
     });
 
     const zipballUrl = `https://api.github.com/repos/${cleanOwner}/${cleanRepo}/zipball/${encodeURIComponent(branch)}`;
-    await downloadZipball(zipballUrl, zipPath, token);
+    await downloadZipball(zipballUrl, zipPath, session.accessToken);
 
     dockerOrchestrator.emitStatus(sessionId, {
       status: 'EXTRACTING',
@@ -379,10 +521,6 @@ router.post('/deploy', async (req, res) => {
 
     const repoRoot = normalizeRepoRoot(extractPath);
     const buildContext = findBuildContext(repoRoot);
-    console.log('GitHub deploy repoRoot:', repoRoot);
-    console.log('GitHub deploy buildContext:', buildContext);
-    console.log('GitHub build context files:', fs.readdirSync(buildContext));
-
     const dockerfilePath = ensureDockerfile(buildContext);
 
     dockerOrchestrator.emitStatus(sessionId, {
@@ -395,10 +533,9 @@ router.post('/deploy', async (req, res) => {
 
     const imageName = `devops-sim-${sessionId}`;
     await dockerOrchestrator.buildImage(buildContext, imageName, sessionId, dockerfilePath);
-
     const container = await dockerOrchestrator.runContainer(imageName, sessionId);
-
     const report = await analyzeProduction(buildContext, imageName, container);
+
     dockerOrchestrator.emit(sessionId, 'production-report', {
       sessionId,
       report
@@ -425,7 +562,6 @@ router.post('/deploy', async (req, res) => {
       await dockerOrchestrator.cleanup(sessionId);
       cleanupPath(extractPath);
     }, 120000);
-
   } catch (error) {
     console.error('GitHub deployment error:', error);
     dockerOrchestrator.emitStatus(sessionId, {
@@ -436,23 +572,23 @@ router.post('/deploy', async (req, res) => {
       error: error.message
     });
     cleanupPath(extractPath);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message || 'Unable to deploy the selected GitHub repository.' });
   } finally {
     cleanupPath(zipPath);
   }
 });
 
 router.get('/deployments', (req, res) => {
-  const deployments = req.orchestrator.getDeploymentHistory()
-  res.json(deployments)
-})
+  const deployments = req.orchestrator.getDeploymentHistory();
+  res.json(deployments);
+});
 
 router.get('/deployments/:sessionId', (req, res) => {
-  const session = req.orchestrator.getSessionInfo(req.params.sessionId)
+  const session = req.orchestrator.getSessionInfo(req.params.sessionId);
   if (!session) {
-    return res.status(404).json({ error: 'Deployment session not found' })
+    return res.status(404).json({ error: 'Deployment session not found' });
   }
-  res.json(session)
-})
+  res.json(session);
+});
 
 export default router;

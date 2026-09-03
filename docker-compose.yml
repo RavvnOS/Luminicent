@@ -1,20 +1,40 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: luminicent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: luminicent-backend
     restart: unless-stopped
+    depends_on:
+      - redis
     ports:
       - "5000:5000"
     volumes:
-      # Mount Docker socket/pipe so backend container can manage simulation containers on host Docker daemon
       - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - ./backend/.env
     environment:
+      - HOST=0.0.0.0
       - PORT=5000
       - NODE_ENV=production
+      - FRONTEND_URL=http://localhost:5173
+      - CORS_ORIGIN=http://localhost:5173
+      - GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback
+      - GITHUB_REDIRECT_URI=http://localhost:5000/api/github/callback
+      - REDIS_URL=redis://redis:6379
+      - SESSION_SECRET=${SESSION_SECRET:-replace-with-a-long-random-secret}
+      - SESSION_SECURE=false
+      - SESSION_SAME_SITE=lax
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/"]
       interval: 15s
@@ -29,6 +49,8 @@ services:
     restart: unless-stopped
     ports:
       - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:5000
     depends_on:
       backend:
         condition: service_healthy
