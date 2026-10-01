@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090d1b">
+    <title>DevOps Deployment Simulator</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script src="/static/vendor/socket.io.min.js" defer></script>
+    <script src="/static/js/app.js" defer></script>
+  </head>
+  <body>
+    <main class="app container glass-effect">
+      <div class="dashboard">
+        <header class="dashboard-header">
+          <h1>🚀 DevOps Deployment Simulator</h1>
+          <p>Simulate CI/CD pipelines with Docker</p>
+        </header>
+
+        <div class="dashboard-layout">
+          <section class="panel-section source-panel" aria-labelledby="source-heading">
+            <div class="source-selector" role="tablist" aria-label="Deployment source">
+              <button class="source-btn active" id="upload-tab" type="button" role="tab" aria-selected="true" aria-controls="upload-panel" data-source="upload">📦 Upload Zip</button>
+              <button class="source-btn" id="github-tab" type="button" role="tab" aria-selected="false" aria-controls="github-panel" data-source="github">🐙 GitHub Repo</button>
+            </div>
+
+            <section id="upload-panel" role="tabpanel" aria-labelledby="upload-tab">
+              <h2 id="source-heading">Upload Application</h2>
+              <div class="file-uploader">
+                <label class="drop-zone" id="drop-zone" for="zip-file">
+                  <span class="upload-icon" aria-hidden="true">📦</span>
+                  <span class="drop-title">Drag &amp; Drop your .zip file</span>
+                  <span class="drop-subtitle">or click to select</span>
+                  <input id="zip-file" type="file" accept=".zip,application/zip" class="hidden-input">
+                </label>
+                <div class="uploading" id="upload-progress" hidden>
+                  <span class="spinner" aria-hidden="true"></span>
+                  <div class="upload-progress-copy">
+                    <p id="upload-file-name">Uploading application...</p>
+                    <progress id="upload-progress-bar" value="0" max="100"></progress>
+                  </div>
+                  <span id="upload-progress-value">0%</span>
+                </div>
+              </div>
+            </section>
+
+            <section id="github-panel" role="tabpanel" aria-labelledby="github-tab" hidden>
+              <h2>Connect &amp; Deploy</h2>
+              <div class="github-loading" id="github-loading" hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <p>Loading GitHub details...</p>
+              </div>
+              <div class="auth-container" id="github-auth">
+                <p class="auth-subtitle">Connect your GitHub account to deploy repositories directly.</p>
+                <a class="github-btn" href="/api/github/login" id="github-login">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.867 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.137 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+                  Continue with GitHub
+                </a>
+              </div>
+              <div class="repo-container" id="github-repositories" hidden>
+                <div class="profile-header">
+                  <div class="user-profile">
+                    <img class="avatar" id="github-avatar" alt="">
+                    <div class="user-profile-info"><h3>GitHub</h3><p id="github-login-name"></p></div>
+                  </div>
+                  <button class="logout-btn" id="github-logout" type="button">Log out</button>
+                </div>
+                <div class="github-error-banner" id="github-error" role="alert" hidden>
+                  <div><strong id="github-error-title">GitHub error</strong><p id="github-error-message"></p></div>
+                  <button class="close-error-btn" id="github-error-close" type="button" aria-label="Dismiss error">×</button>
+                </div>
+                <label class="search-bar"><span class="visually-hidden">Search repositories</span><input id="repo-search" type="search" placeholder="Search repositories..."></label>
+                <div class="repo-actions"><button class="submit-btn secondary-action" id="repo-refresh" type="button">Refresh repositories</button></div>
+                <div class="repo-list" id="repo-list" aria-live="polite"></div>
+                <p class="no-repos" id="repo-empty" hidden>No repositories found for this account.</p>
+                <section class="selected-repo-panel" id="selected-repo-panel" hidden>
+                  <div class="selected-repo-header"><strong id="selected-repo-name"></strong><span id="selected-repo-visibility"></span></div>
+                  <div class="form-group"><label for="branch-select">Branch</label><select id="branch-select"></select></div>
+                  <p class="branch-loading" id="branch-loading" hidden>Loading branches...</p>
+                  <button class="submit-btn" id="deploy-repo" type="button" disabled>Deploy repository</button>
+                </section>
+              </div>
+            </section>
+
+            <div class="error-message" id="global-error" role="alert" hidden></div>
+          </section>
+
+          <section class="panel-section pipeline-panel" id="pipeline-panel" aria-labelledby="pipeline-title" hidden>
+            <h2 id="pipeline-title">Pipeline Execution</h2>
+            <div class="live-pipeline">
+              <div class="pipeline-stages" id="pipeline-stages" aria-label="Deployment pipeline">
+                <div class="pipeline-stage" data-stage="upload"><span class="stage-icon" aria-hidden="true">📦</span><span class="stage-label">Upload</span></div>
+                <span class="pipeline-connector"></span>
+                <div class="pipeline-stage" data-stage="extract"><span class="stage-icon" aria-hidden="true">📂</span><span class="stage-label">Extract</span></div>
+                <span class="pipeline-connector"></span>
+                <div class="pipeline-stage" data-stage="build"><span class="stage-icon" aria-hidden="true">🔨</span><span class="stage-label">Build Image</span></div>
+                <span class="pipeline-connector"></span>
+                <div class="pipeline-stage" data-stage="run"><span class="stage-icon" aria-hidden="true">▶️</span><span class="stage-label">Run Container</span></div>
+                <span class="pipeline-connector"></span>
+                <div class="pipeline-stage" data-stage="finish"><span class="stage-icon" aria-hidden="true">✅</span><span class="stage-label">Finished</span></div>
+              </div>
+              <div class="pipeline-info">
+                <p>Session ID: <code id="session-id"></code></p>
+                <p>Status: <span class="status-badge" id="deployment-status">IDLE</span></p>
+                <p class="status-detail" id="status-detail">Waiting for pipeline activity.</p>
+                <div class="progress-wrapper"><progress id="deployment-progress" value="0" max="100"></progress><span id="deployment-progress-value">0%</span></div>
+                <button class="stop-button" id="stop-deployment" type="button" hidden>Stop Simulation</button>
+                <div class="runtime-metrics" id="runtime-metrics" hidden>
+                  <h3>Container monitoring</h3>
+                  <div class="metrics-grid"><span>CPU <strong id="metric-cpu">0%</strong></span><span>Memory <strong id="metric-memory">0 MB</strong></span><span>Network RX <strong id="metric-rx">0 B</strong></span><span>Network TX <strong id="metric-tx">0 B</strong></span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section class="logs-section" id="logs-section" hidden>
+          <div class="section-heading"><h2>Execution Logs</h2><span class="live-indicator"><i></i> LIVE</span></div>
+          <div class="terminal-viewer">
+            <div class="terminal-header"><div class="terminal-buttons" aria-hidden="true"><i class="red"></i><i class="yellow"></i><i class="green"></i></div><span>deployment output</span></div>
+            <div class="terminal-output" id="terminal-output" role="log" aria-live="polite" aria-relevant="additions text"><div class="log-line idle">Waiting for terminal output...</div></div>
+          </div>
+        </section>
+
+        <section class="report-section" id="report-section" hidden aria-live="polite"></section>
+      </div>
+    </main>
+  </body>
+</html>

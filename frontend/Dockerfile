@@ -1,24 +1,18 @@
-# Frontend Multi-stage Dockerfile for Luminicent
-# Stage 1: Build Vite React application
-FROM node:18-alpine AS builder
+FROM golang:1.24-alpine AS build
 
-WORKDIR /app
-
-COPY package*.json ./
-RUN npm install
-
+WORKDIR /src
+COPY go.mod ./
 COPY . .
-RUN npm run build
+RUN go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/luminicent .
 
-# Stage 2: Serve using Nginx
-FROM nginx:alpine
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/luminicent /usr/local/bin/luminicent
 
-# Copy custom Nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV BACKEND_URL=http://backend:5000
 
-# Copy build artifacts from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
-
-EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]
+EXPOSE 8080
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/luminicent"]
