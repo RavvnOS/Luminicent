@@ -1,4 +1,4 @@
-# **Luminicent**
+# Luminicent
 
 
 
@@ -7,42 +7,84 @@ Luminicent is a DevOps deployment simulator that supports uploading zip archives
 
 ## Luminicent CLI
 
-Luminicent also includes a Linux-first command-line interface written in Go.
+Luminicent includes a Linux-first Go command-line interface.
 
-The CLI is being developed as the primary testing interface for Luminicent's future Linux-based environment. It is designed to accept a target project, run controlled analysis and testing inside an isolated environment, and generate a report describing issues found in the target project.
+The current CLI is intentionally focused on a single primary workflow: testing a target project using `luminicent test <target> [flags]`. Other commands remain part of the CLI command surface as placeholders while their full functionality is implemented incrementally.
 
 ### Current Status
 
-The Go CLI foundation is currently implemented.
-
-Current CLI capabilities:
+The current CLI implementation includes:
 
 - Go-based CLI
 - Cobra command framework
-- Linux-compatible binary
-- Target testing command foundation
+- Linux-compatible build
+- `luminicent test <target>` command
+- `--branch` and `--env` flags on `test`
+- Argument validation
 - Version information
-- Local project and Git SSH target acquisition planned
+- Additional command placeholders
+
+The following capabilities are future phases and are not fully implemented yet:
+
+- Target acquisition
+- Docker isolation
+- Target deployment/runtime testing
+- Production-readiness testing
+- OWASP security testing
+- Dynamic vulnerability testing
+- Evidence collection
+- Security reporting
 
 ### CLI Usage
 
+The primary workflow is:
+
 ```bash
-luminicent test <target>
+luminicent test <target> [flags]
 ```
 
-Example using a local project:
+The current operational flags belong only to the `test` command:
+
+- `--branch`: Selects the Git branch to test when the target is a Git repository.
+- `--env`: Supplies environment variables to the test process or container. Values must use `KEY=VALUE` format and may be specified multiple times.
+
+Examples:
 
 ```bash
 luminicent test ./my-project
 ```
 
-Example using a Git SSH repository:
+```bash
+luminicent test ./my-project --env PORT=8080 --env NODE_ENV=production
+```
 
 ```bash
 luminicent test git@github.com:user/project.git
 ```
 
-The CLI does not require GitHub OAuth for target acquisition. Git SSH repositories will use the Linux user's existing SSH configuration and keys.
+```bash
+luminicent test git@github.com:user/project.git --branch main
+```
+
+Git SSH targets are treated as a future target acquisition workflow. They do not require GitHub OAuth and use the Linux user's existing SSH configuration and keys.
+
+### Current CLI Structure
+
+```text
+luminicent
+├── test <target> [flags]
+│   ├── --branch
+│   └── --env
+├── deploy <target>
+├── status [deployment-id]
+├── logs <deployment-id>
+├── cleanup
+├── analyze <target>
+├── config
+└── version
+```
+
+The `test` command is the primary workflow. The other commands are part of the current CLI command surface but remain placeholders while functionality is added incrementally.
 
 ### CLI Architecture
 
@@ -55,6 +97,12 @@ Luminicent
     ├── cmd/
     │   ├── root.go
     │   ├── test.go
+    │   ├── deploy.go
+    │   ├── status.go
+    │   ├── logs.go
+    │   ├── cleanup.go
+    │   ├── analyze.go
+    │   ├── config.go
     │   └── version.go
     ├── main.go
     ├── go.mod
@@ -104,6 +152,8 @@ Production Readiness Tests
 9. Target project security report
 10. Complete `luminicent test` pipeline
 11. Linux hardening and release
+
+The roadmap above describes planned testing functionality. The Go CLI interface work is currently implemented, while the actual target acquisition and testing pipeline remains future work.
 
 ### Security Testing Scope
 
@@ -156,16 +206,14 @@ RavvnOS/Luminicent
         │
         │ upstream
         ▼
-arvind-git04/Luminicent
+Sahilcyber-code/Luminicent
         │
-        │
+        │ pull request
         ▼
-CLI-&-GO-Version
+RavvnOS/Luminicent
 ```
 
-Changes are pushed only to the developer's fork and submitted to the upstream repository through a pull request.
-
-The upstream repository is never pushed to directly.
+Changes are pushed to the developer fork and submitted to upstream through pull requests. The upstream repository is not pushed to directly.
 
 ---
 
