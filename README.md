@@ -1,12 +1,11 @@
-**# Luminicent**
+# **Luminicent**
 
 
 
 Luminicent is a DevOps deployment simulator that supports uploading zip archives and deploying GitHub repositories using Dockerized app analysis and container simulation.
 
 
-
-**## Luminicent CLI
+## Luminicent CLI
 
 Luminicent also includes a Linux-first command-line interface written in Go.
 
