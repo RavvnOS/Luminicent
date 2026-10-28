@@ -26,7 +26,7 @@ export default function Dashboard({ socket, sessionId, setSessionId, status, pro
     onUploadComplete?.(newSessionId, report)
   }
 
-  const handleGithubDeployStart = () => {
+  const handleGithubDeployStart = async () => {
     setUploadedFile({ name: 'GitHub Repository' })
     return onUploadStart?.()
   }

@@ -1,6 +1,7 @@
 package acquisition
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -67,20 +68,47 @@ func AcquireLocalProject(target string) (string, error) {
 }
 
 func AcquireGitProject(target string) (string, error) {
-	return acquireGitProject(target, exec.LookPath, runGitClone)
+	return AcquireGitProjectContext(context.Background(), target, "")
+}
+
+func AcquireGitProjectBranch(target, branch string) (string, error) {
+	return AcquireGitProjectContext(context.Background(), target, branch)
+}
+
+func AcquireGitProjectContext(ctx context.Context, target, branch string) (string, error) {
+	return acquireGitProject(ctx, target, branch, exec.LookPath, runGitCommand)
 }
 
 type gitLookPathFunc func(string) (string, error)
-type gitCloneFunc func(gitPath, target, destination string) ([]byte, error)
+type gitCommandFunc func(context.Context, string, ...string) ([]byte, error)
 
-func acquireGitProject(target string, lookPath gitLookPathFunc, clone gitCloneFunc) (string, error) {
+func acquireGitProject(ctx context.Context, target, branch string, lookPath gitLookPathFunc, run gitCommandFunc) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("Git acquisition context cannot be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("Git acquisition cancelled: %w", err)
+	}
 	if !isSupportedSSHGitTarget(target) {
 		return "", fmt.Errorf("unsupported Git target: expected an SSH repository URL")
+	}
+	if branch != "" {
+		if err := ValidateBranchName(branch); err != nil {
+			return "", err
+		}
 	}
 
 	gitPath, err := lookPath("git")
 	if err != nil {
 		return "", fmt.Errorf("Git executable not found; install Git and ensure it is available on PATH: %w", err)
+	}
+	if branch != "" {
+		if _, err := run(ctx, gitPath, "check-ref-format", "--branch", branch); err != nil {
+			return "", fmt.Errorf("invalid Git branch name")
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("Git acquisition cancelled: %w", err)
 	}
 
 	destination, err := os.MkdirTemp("", "luminicent-git-*")
@@ -96,25 +124,66 @@ func acquireGitProject(target string, lookPath gitLookPathFunc, clone gitCloneFu
 		return "", fmt.Errorf("resolve clone directory path: %w", err)
 	}
 
-	output, err := clone(gitPath, target, absDestination)
+	cloneArgs := []string{"clone"}
+	if branch != "" {
+		cloneArgs = append(cloneArgs, "--single-branch", "--branch="+branch)
+	}
+	cloneArgs = append(cloneArgs, "--", target, absDestination)
+	output, err := run(ctx, gitPath, cloneArgs...)
 	if err != nil {
 		cleanupErr := os.RemoveAll(absDestination)
-		detail := strings.TrimSpace(strings.ReplaceAll(string(output), target, "<repository>"))
-		if detail == "" {
-			detail = err.Error()
+		detail := "Git clone failed"
+		if branch != "" {
+			detail = fmt.Sprintf("Git clone failed for branch %q", branch)
+			if isMissingRemoteBranch(output) {
+				detail = fmt.Sprintf("Git branch %q was not found on the remote", branch)
+			}
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			err = errors.Join(contextErr, err)
 		}
 		if cleanupErr != nil {
-			return "", fmt.Errorf("Git clone failed: %s (also failed to clean up temporary directory: %v): %w", detail, cleanupErr, err)
+			return "", fmt.Errorf("%s (also failed to clean up temporary directory: %v): %w", detail, cleanupErr, err)
 		}
-		return "", fmt.Errorf("Git clone failed: %s: %w", detail, err)
+		return "", fmt.Errorf("%s: %w", detail, err)
 	}
-
 	return absDestination, nil
 }
 
-func runGitClone(gitPath, target, destination string) ([]byte, error) {
-	command := exec.Command(gitPath, "clone", "--", target, destination)
+func runGitCommand(ctx context.Context, gitPath string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, gitPath, args...)
 	return command.CombinedOutput()
+}
+
+func isMissingRemoteBranch(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return (strings.Contains(message, "remote branch") && strings.Contains(message, "not found")) ||
+		strings.Contains(message, "couldn't find remote ref")
+}
+
+func ValidateBranchName(branch string) error {
+	if branch == "" || strings.TrimSpace(branch) != branch ||
+		strings.IndexFunc(branch, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r)
+		}) >= 0 ||
+		strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") ||
+		strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") ||
+		strings.Contains(branch, "..") || strings.Contains(branch, "//") ||
+		strings.Contains(branch, "@{") || branch == "@" {
+		return fmt.Errorf("invalid Git branch name")
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || strings.HasPrefix(component, ".") ||
+			strings.HasSuffix(component, ".lock") {
+			return fmt.Errorf("invalid Git branch name")
+		}
+		for _, character := range component {
+			if strings.ContainsRune(" ~^:?*[\\", character) {
+				return fmt.Errorf("invalid Git branch name")
+			}
+		}
+	}
+	return nil
 }
 
 func isSupportedSSHGitTarget(target string) bool {

@@ -139,20 +139,21 @@ export default function GithubConnector({ onDeployStart, onDeployComplete }) {
     if (!selectedRepo) return
 
     setDeploying(true)
-    const sessionId = onDeployStart()
-
     try {
+      const session = await onDeployStart()
       const response = await fetch(`${BACKEND_URL}/api/github/deploy`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.apiToken}`
         },
         credentials: 'include',
         body: JSON.stringify({
           owner: selectedRepo.owner.login,
           repo: selectedRepo.name,
           branch: selectedBranch,
-          sessionId
+          sessionId: session.sessionId,
+          sessionToken: session.sessionToken
         })
       })
 

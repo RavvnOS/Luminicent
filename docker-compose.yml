@@ -6,8 +6,13 @@ services:
     container_name: luminicent-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
+    volumes:
+      - luminicent-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   backend:
     build:
@@ -16,11 +21,10 @@ services:
     container_name: luminicent-backend
     restart: unless-stopped
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
-      - "5000:5000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "127.0.0.1:5000:5000"
     env_file:
       - ./backend/.env
     environment:
@@ -32,11 +36,14 @@ services:
       - GITHUB_CALLBACK_URL=http://localhost:5000/api/github/callback
       - GITHUB_REDIRECT_URI=http://localhost:5000/api/github/callback
       - REDIS_URL=redis://redis:6379
-      - SESSION_SECRET=${SESSION_SECRET:-replace-with-a-long-random-secret}
+      - LUMINICENT_LOCAL_ONLY=true
+      - LUMINICENT_COMPOSE_LOCAL_ONLY=true
+      - LUMINICENT_EXECUTION_MODE=disabled
+      - LUMINICENT_BUILD_NETWORK=none
       - SESSION_SECURE=false
       - SESSION_SAME_SITE=lax
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -48,7 +55,7 @@ services:
     container_name: luminicent-frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
     environment:
       - VITE_API_URL=http://localhost:5000
     depends_on:
@@ -58,3 +65,6 @@ services:
 networks:
   default:
     name: luminicent-network
+
+volumes:
+  luminicent-redis-data:

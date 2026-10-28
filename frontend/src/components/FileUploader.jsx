@@ -40,18 +40,20 @@ export default function FileUploader({ socket, onUploadStart, onUploadComplete }
     }
 
     setIsUploading(true)
-    const sessionId = onUploadStart()
-
     try {
+      const session = await onUploadStart()
       const formData = new FormData()
       formData.append('file', file)
-      if (sessionId) {
-        formData.append('sessionId', sessionId)
-      }
 
       const response = await fetch(`${BACKEND_URL}/api/upload`, {
         method: 'POST',
-        body: formData
+        credentials: 'include',
+        body: formData,
+        headers: {
+          Authorization: `Bearer ${session.apiToken}`,
+          'X-Luminicent-Session-Id': session.sessionId,
+          'X-Luminicent-Session-Token': session.sessionToken
+        }
       })
 
       const data = await response.json()

@@ -74,6 +74,91 @@
   font-size: 14px;
 }
 
+.coverage-assessment {
+  margin: 10px 0 0;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.coverage-limitation {
+  margin: 0 0 15px;
+  line-height: 1.5;
+}
+
+.coverage-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.coverage-count {
+  padding: 10px;
+  border: 1px solid #d5d5d5;
+  border-radius: 6px;
+  background: #f7f7f7;
+}
+
+.coverage-count dt {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.coverage-count dd {
+  margin: 5px 0 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.coverage-checks,
+.coverage-check ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.coverage-check {
+  padding: 12px;
+  border: 1px solid #777;
+  border-left-width: 5px;
+  border-radius: 6px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+
+.coverage-check-passed {
+  border-left-color: #287a35;
+}
+
+.coverage-check-findings {
+  border-left-color: #9a5c00;
+}
+
+.coverage-check-failed,
+.coverage-check-unsupported,
+.coverage-check-skipped,
+.coverage-check-incomplete,
+.coverage-check-invalid {
+  border-left-color: #8a3030;
+}
+
+.coverage-check-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.coverage-check-status {
+  font-weight: 700;
+}
+
+.coverage-check p {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
 .report-section {
   background: rgba(255, 255, 255, 0.95);
   border-radius: 10px;
@@ -222,7 +307,7 @@
 
 @media (max-width: 768px) {
   .production-report {
-    padding: 20px;
+    padding: 16px;
   }
 
   .report-header {
@@ -251,5 +336,9 @@
   .issue-severity {
     width: 100%;
     text-align: center;
+  }
+
+  .coverage-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
