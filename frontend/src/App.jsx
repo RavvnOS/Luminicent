@@ -14,6 +14,8 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('')
   const [productionReport, setProductionReport] = useState(null)
   const sessionRef = useRef(null)
+  const sessionTokenRef = useRef(null)
+  const apiTokenRef = useRef(null)
   const socketRef = useRef(null)
 
   useEffect(() => {
@@ -21,8 +23,11 @@ function App() {
   }, [sessionId])
 
   useEffect(() => {
-    if (socket?.connected && sessionId) {
-      socket.emit('joinSession', { sessionId })
+    if (socket?.connected && sessionId && sessionTokenRef.current) {
+      socket.emit('joinSession', {
+        sessionId,
+        sessionToken: sessionTokenRef.current
+      })
     }
   }, [socket, sessionId])
 
@@ -48,6 +53,7 @@ function App() {
 
     const newSocket = io(BACKEND_URL, {
       path: '/socket.io',
+      withCredentials: true,
       transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -58,8 +64,11 @@ function App() {
 
     newSocket.on('connect', () => {
       console.log('Connected to backend')
-      if (sessionRef.current) {
-        newSocket.emit('joinSession', { sessionId: sessionRef.current })
+      if (sessionRef.current && sessionTokenRef.current) {
+        newSocket.emit('joinSession', {
+          sessionId: sessionRef.current,
+          sessionToken: sessionTokenRef.current
+        })
       }
     })
 
@@ -97,7 +106,7 @@ function App() {
     })
 
     newSocket.on('terminal_output', (data) => {
-      if (data.sessionId && sessionRef.current && data.sessionId !== sessionRef.current) {
+      if (!data.sessionId || !sessionRef.current || data.sessionId !== sessionRef.current) {
         return
       }
 
@@ -105,7 +114,7 @@ function App() {
     })
 
     newSocket.on('build_log', (data) => {
-      if (data.sessionId && sessionRef.current && data.sessionId !== sessionRef.current) {
+      if (!data.sessionId || !sessionRef.current || data.sessionId !== sessionRef.current) {
         return
       }
 
@@ -113,7 +122,7 @@ function App() {
     })
 
     newSocket.on('runtime_log', (data) => {
-      if (data.sessionId && sessionRef.current && data.sessionId !== sessionRef.current) {
+      if (!data.sessionId || !sessionRef.current || data.sessionId !== sessionRef.current) {
         return
       }
 
@@ -122,11 +131,11 @@ function App() {
 
     newSocket.on('production-report', (data) => {
       const report = data?.report || data
-      const incomingSessionId = data?.sessionId || sessionRef.current
+      const incomingSessionId = data?.sessionId
 
       console.log('Received production report event:', data)
 
-      if (!incomingSessionId || incomingSessionId === sessionRef.current) {
+      if (incomingSessionId && incomingSessionId === sessionRef.current) {
         if (report) {
           setProductionReport(report)
           setStatus('FINISHED')
@@ -152,10 +161,24 @@ function App() {
     }
   }, [])
 
-  const handleUploadStart = () => {
-    const nextSessionId = Date.now().toString()
-    sessionRef.current = nextSessionId
-    setSessionId(nextSessionId)
+  const handleUploadStart = async () => {
+    const apiToken = window.prompt('Enter the Luminicent API token')
+    if (!apiToken) {
+      throw new Error('An API token is required')
+    }
+    const response = await fetch(`${BACKEND_URL}/api/sessions`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${apiToken}` }
+    })
+    const session = await response.json()
+    if (!response.ok || !session.sessionId || !session.sessionToken) {
+      throw new Error(session.error || 'Unable to create an authorized session')
+    }
+    apiTokenRef.current = apiToken
+    sessionRef.current = session.sessionId
+    sessionTokenRef.current = session.sessionToken
+    setSessionId(session.sessionId)
     setLogs([])
     setProgress(0)
     setStatus('UPLOADING')
@@ -163,12 +186,10 @@ function App() {
     setProductionReport(null)
 
     if (socketRef.current?.connected) {
-      socketRef.current.emit('joinSession', { sessionId: nextSessionId })
-    } else {
-      console.debug('Socket not yet connected, session join will happen on connect', nextSessionId)
+      socketRef.current.emit('joinSession', session)
     }
 
-    return nextSessionId
+    return { ...session, apiToken }
   }
 
   const handleUploadComplete = (newSessionId, report) => {
@@ -188,10 +209,17 @@ function App() {
 
     setStatus('STOPPING')
     try {
-      const response = await fetch('/api/cleanup', {
+      const response = await fetch(`${BACKEND_URL}/api/cleanup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId })
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiTokenRef.current}`
+        },
+        body: JSON.stringify({
+          sessionId,
+          sessionToken: sessionTokenRef.current
+        })
       })
       const data = await response.json()
       if (!response.ok) {

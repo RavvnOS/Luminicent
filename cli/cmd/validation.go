@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"strings"
+
+	"github.com/arvind-git04/Luminicent/cli/internal/acquisition"
 )
 
 func validateKeyValueList(values []string, flagName string) error {
@@ -19,8 +21,8 @@ func validateKeyValueList(values []string, flagName string) error {
 }
 
 func validateBranch(branch string) error {
-	if strings.TrimSpace(branch) == "" {
-		return fmt.Errorf("--branch must not be empty")
+	if err := acquisition.ValidateBranchName(branch); err != nil {
+		return fmt.Errorf("--branch: %w", err)
 	}
 	return nil
 }

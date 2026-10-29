@@ -5,6 +5,9 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 
 const router = express.Router();
+router.use((_req, res) => {
+  res.status(410).json({ error: 'Legacy GitHub deployment route is disabled' });
+});
 
 // Helper to make GET requests to GitHub API
 function getGithubJson(url, token) {
