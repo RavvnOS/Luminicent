@@ -19,6 +19,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@babel/parser": "7.29.2",
     "adm-zip": "^0.5.10",
     "axios": "^1.16.1",
     "connect-redis": "^8.0.0",
