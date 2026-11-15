@@ -1,0 +1,499 @@
+{
+  "benchmarkVersion": "1.3.0",
+  "description": "Small labeled regression corpus for the existing Luminicent JavaScript/TypeScript static analyzer.",
+  "cases": [
+    {
+      "id": "sql-direct-request-query",
+      "category": "sql_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/direct.js": "const express = require('express');\nconst app = express();\nfunction handle(req) {\n  const sql = \"SELECT * FROM users WHERE name='\" + req.query.name + \"'\";\n  db.query(sql);\n}\napp.get('/user', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/direct.js",
+          "line": 5,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 157, "end": 170 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "db.query"
+        }
+      ],
+      "rationale": "A verified Express handler passes a request query value into concatenated SQL."
+    },
+    {
+      "id": "sql-multiple-assignments",
+      "category": "sql_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/multi.js": "const express = require('express');\nconst app = express();\nfunction handle(req) {\n  const first = req.params.id;\n  const second = first;\n  const sql = 'SELECT * FROM accounts WHERE id=' + second;\n  db.execute(sql);\n}\napp.get('/account', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/multi.js",
+          "line": 7,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 198, "end": 213 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "db.execute"
+        }
+      ],
+      "rationale": "Taint should survive two local assignments before reaching the SQL execution sink."
+    },
+    {
+      "id": "sql-cross-file-route-helper-sink",
+      "category": "sql_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/route.js": "const express = require('express');\nconst app = express();\nconst { run } = require('./sink.js');\nfunction handle(req) { run(req.query.id); }\napp.get('/account', handle);\n",
+        "src/sink.js": "export function run(value) {\n  db.query('SELECT * FROM accounts WHERE id=' + value);\n}\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/sink.js",
+          "line": 2,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 31, "end": 83 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "db.query",
+          "requireCrossFileStep": true
+        }
+      ],
+      "rationale": "A registered route passes request data through a CommonJS import into an ES module SQL sink."
+    },
+    {
+      "id": "sql-unknown-escape-preserves-taint",
+      "category": "sql_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/escape.js": "const express = require('express');\nconst app = express();\nconst mysql = require('unknown-package');\nfunction handle(req) {\n  const value = mysql.escape(req.query.name);\n  db.query(\"SELECT * FROM users WHERE name='\" + value + \"'\");\n}\napp.get('/user', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/escape.js",
+          "line": 6,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 172, "end": 230 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "db.query"
+        }
+      ],
+      "rationale": "An unknown implementation named escape must not clear taint."
+    },
+    {
+      "id": "sql-parameterized-query",
+      "category": "sql_injection",
+      "expectedOutcome": "safe",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/parameterized.js": "const express = require('express');\nconst app = express();\nfunction handle(req) {\n  db.query('SELECT * FROM users WHERE id = ?', [req.query.id]);\n}\napp.get('/user', handle);\n"
+      },
+      "expectedFindings": [],
+      "rationale": "The SQL statement is static and the request value is supplied separately as a bound parameter."
+    },
+    {
+      "id": "sql-static-query",
+      "category": "sql_injection",
+      "expectedOutcome": "safe",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/static.js": "db.query('SELECT count(*) FROM users');\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A static SQL literal has no dynamic input."
+    },
+    {
+      "id": "sql-custom-query-method",
+      "category": "sql_injection",
+      "expectedOutcome": "safe",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/custom-query.js": "const express = require('express');\nconst app = express();\nconst metrics = { query(value) { return value; } };\nfunction handle(req) {\n  metrics.query('SELECT ' + req.query.label);\n}\napp.get('/label', handle);\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A user-defined object method named query is not a database sink; this measures name-based sink false positives."
+    },
+    {
+      "id": "sql-two-sinks-one-line",
+      "category": "sql_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/two-sinks.js": "const express = require('express');\nconst app = express();\nfunction handle(req) {\n  db.query('SELECT ' + req.query.first); db.query('SELECT ' + req.query.second);\n}\napp.get('/items', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/two-sinks.js",
+          "line": 4,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 84, "end": 121 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "first"
+        },
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/two-sinks.js",
+          "line": 4,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 123, "end": 161 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "second"
+        }
+      ],
+      "rationale": "Both syntactically distinct vulnerable sinks must be matched independently even though they share a line."
+    },
+    {
+      "id": "sql-dynamic-import-partial",
+      "category": "sql_injection",
+      "expectedOutcome": "partial",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/dynamic-import.js": "const express = require('express');\nconst app = express();\napp.get('/items', async function handle(req) {\n  const moduleName = req.query.module;\n  await import(moduleName);\n  db.query('SELECT * FROM items WHERE id=' + req.query.id);\n});\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/dynamic-import.js",
+          "line": 6,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 175, "end": 231 }
+        }
+      ],
+      "rationale": "The direct SQL pattern remains visible, but dynamic module resolution should be reflected as incomplete project analysis."
+    },
+    {
+      "id": "sql-dynamic-import-partial-multi-sink",
+      "category": "sql_injection",
+      "expectedOutcome": "partial",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/dynamic-import-multi.js": "const express = require('express');\nconst app = express();\napp.get('/items', async function handle(req) {\n  const moduleName = req.query.module;\n  await import(moduleName);\n  db.query('SELECT * FROM items WHERE first=' + req.query.first); db.query('SELECT * FROM items WHERE second=' + req.query.second);\n});\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/dynamic-import-multi.js",
+          "line": 6,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 175, "end": 237 },
+          "sinkContains": "first"
+        },
+        {
+          "ruleId": "LUM-INJ-001",
+          "file": "src/dynamic-import-multi.js",
+          "line": 6,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 239, "end": 303 },
+          "sinkContains": "second"
+        }
+      ],
+      "rationale": "Both sinks have explicit expectations while dynamic module loading makes project analysis partial."
+    },
+    {
+      "id": "sql-unmodeled-browser-source",
+      "category": "sql_injection",
+      "expectedOutcome": "unsupported",
+      "checkId": "sql_injection_pattern_search",
+      "files": {
+        "src/browser-source.js": "function search() {\n  const filter = window.location.search;\n  const sql = 'SELECT * FROM items WHERE label=' + filter;\n  db.query(sql);\n}\n"
+      },
+      "expectedFindings": [],
+      "rationale": "Browser URL input is outside the current modeled JavaScript source set; this case is not scored as a clean negative."
+    },
+    {
+      "id": "command-shell-tainted",
+      "category": "command_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "os_command_injection_pattern_search",
+      "files": {
+        "src/shell.js": "const express = require('express');\nconst app = express();\nconst { exec } = require('node:child_process');\nfunction handle(req) {\n  exec('echo ' + req.query.value, { shell: true });\n}\napp.get('/echo', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-002",
+          "file": "src/shell.js",
+          "line": 5,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 132, "end": 180 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "exec",
+          "expectedCwe": "CWE-78"
+        }
+      ],
+      "rationale": "Request input reaches a shell-enabled child-process call."
+    },
+    {
+      "id": "command-static-safe",
+      "category": "command_injection",
+      "expectedOutcome": "safe",
+      "checkId": "os_command_injection_pattern_search",
+      "files": {
+        "src/static-command.js": "const { execFile } = require('node:child_process');\nexecFile('git', ['status']);\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A fixed executable and static argument array contain no dynamic input."
+    },
+    {
+      "id": "command-argument-array-tainted",
+      "category": "command_injection",
+      "expectedOutcome": "vulnerable",
+      "checkId": "os_command_injection_pattern_search",
+      "files": {
+        "src/arguments.js": "const express = require('express');\nconst app = express();\nconst { spawn } = require('node:child_process');\nfunction handle(req) {\n  spawn('tool', [req.query.option]);\n}\napp.get('/run', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-INJ-002",
+          "file": "src/arguments.js",
+          "line": 5,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 133, "end": 166 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "spawn",
+          "expectedCwe": "CWE-88"
+        }
+      ],
+      "rationale": "A tainted value in an argument array is measured as argument injection, distinct from shell parsing."
+    },
+    {
+      "id": "command-custom-exec-method",
+      "category": "command_injection",
+      "expectedOutcome": "safe",
+      "checkId": "os_command_injection_pattern_search",
+      "files": {
+        "src/custom-exec.js": "const express = require('express');\nconst app = express();\nconst worker = { exec(value) { return value; } };\nfunction handle(req) {\n  worker.exec(req.query.command);\n}\napp.get('/worker', handle);\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A custom method named exec is not child_process; it traps name-based sink recognition."
+    },
+    {
+      "id": "dynamic-eval-tainted",
+      "category": "dynamic_code_execution",
+      "expectedOutcome": "vulnerable",
+      "checkId": "dynamic_code_execution_pattern_search",
+      "files": {
+        "src/eval.js": "const express = require('express');\nconst app = express();\nfunction handle(req) {\n  eval(req.query.expression);\n}\napp.get('/evaluate', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-DYN-001",
+          "file": "src/eval.js",
+          "line": 4,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 84, "end": 110 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "eval",
+          "sinkProvenance": {
+            "status": "global_builtin",
+            "resolution": "implicit_global",
+            "api": "eval"
+          }
+        }
+      ],
+      "rationale": "A request-derived expression reaches eval in a verified route handler."
+    },
+    {
+      "id": "dynamic-eval-static-expression",
+      "category": "dynamic_code_execution",
+      "expectedOutcome": "vulnerable",
+      "checkId": "dynamic_code_execution_pattern_search",
+      "files": {
+        "src/static-eval.js": "eval('1 + 1');\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-DYN-001",
+          "file": "src/static-eval.js",
+          "line": 1,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 0, "end": 13 }
+        }
+      ],
+      "rationale": "The static string is not attacker-controlled, but evaluating code remains a supported dangerous-API indicator rather than a taint-confirmed vulnerability."
+    },
+    {
+      "id": "dynamic-custom-eval-method",
+      "category": "dynamic_code_execution",
+      "expectedOutcome": "safe",
+      "checkId": "dynamic_code_execution_pattern_search",
+      "files": {
+        "src/shadowed-eval.cjs": "const evaluator = { eval(value) { return value; } };\nfunction handle() { evaluator.eval('ordinary data'); }\nhandle();\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A custom object method named eval is not JavaScript code evaluation; this is a false-positive trap."
+    },
+    {
+      "id": "dynamic-timer-string",
+      "category": "dynamic_code_execution",
+      "expectedOutcome": "vulnerable",
+      "checkId": "dynamic_code_execution_pattern_search",
+      "files": {
+        "src/timer.js": "setTimeout('performAction()', 10);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-DYN-004",
+          "file": "src/timer.js",
+          "line": 1,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 0, "end": 33 }
+        }
+      ],
+      "rationale": "A timer API receives a code string, a supported dynamic-execution pattern."
+    },
+    {
+      "id": "deserialization-request-unserialize",
+      "category": "unsafe_deserialization",
+      "expectedOutcome": "vulnerable",
+      "checkId": "unsafe_deserialization_pattern_search",
+      "files": {
+        "src/unserialize.js": "const express = require('express');\nconst app = express();\nconst serialize = require('node-serialize');\nfunction handle(req) {\n  serialize.unserialize(req.body.payload);\n}\napp.post('/decode', handle);\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-DES-005",
+          "file": "src/unserialize.js",
+          "line": 5,
+          "identityStatus": "verified",
+          "sourceSpan": { "start": 129, "end": 168 },
+          "requireTaintTrace": true,
+          "sourceContains": "req",
+          "sinkContains": "unserialize"
+        }
+      ],
+      "rationale": "Request body data reaches the modeled node-serialize deserialization API."
+    },
+    {
+      "id": "deserialization-unrelated-method",
+      "category": "unsafe_deserialization",
+      "expectedOutcome": "safe",
+      "checkId": "unsafe_deserialization_pattern_search",
+      "files": {
+        "src/codec.js": "const codec = { unserialize(value) { return value; } };\ncodec.unserialize('plain text');\n"
+      },
+      "expectedFindings": [],
+      "rationale": "A method name alone on an unrelated object should not be treated as an unsafe serialization library."
+    },
+    {
+      "id": "credential-synthetic-provider-token",
+      "category": "credential_indicators",
+      "expectedOutcome": "vulnerable",
+      "checkId": "secret_pattern_search",
+      "files": {
+        "src/credentials.js": "const accessToken = 'ghp_BENCHMARK_ONLY_0000000000000000000000000';\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-SEC-002",
+          "file": "src/credentials.js",
+          "line": 1,
+          "identityStatus": "unverified",
+          "identityUnverifiedReason": "Credential indicators are text locations and have no stable AST sink span.",
+          "acceptedRuleIds": ["LUM-SEC-001", "LUM-SEC-002"],
+          "evidenceContains": "<redacted>"
+        }
+      ],
+      "rationale": "This synthetic, nonfunctional value exercises a provider-format indicator without including a real credential."
+    },
+    {
+      "id": "credential-placeholder-doc-example",
+      "category": "credential_indicators",
+      "expectedOutcome": "safe",
+      "checkId": "secret_pattern_search",
+      "files": {
+        "src/config-example.js": "// Documentation example: accessToken = 'ghp_BENCHMARK_ONLY_0000000000000000000000000'\nconst accessToken = 'YOUR_ACCESS_TOKEN';\n"
+      },
+      "expectedFindings": [],
+      "rationale": "Commented examples and explicit placeholders must not be reported as literal credentials."
+    },
+    {
+      "id": "tls-verification-disabled",
+      "category": "tls_and_configuration",
+      "expectedOutcome": "vulnerable",
+      "checkId": "insecure_transport_configuration",
+      "files": {
+        "config/tls.yml": "tls_verify: false\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-TLS-001",
+          "file": "config/tls.yml",
+          "line": 1,
+          "identityStatus": "unverified",
+          "identityUnverifiedReason": "Configuration findings do not expose a stable AST sink span.",
+          "evidenceContains": "TLS verification disabled"
+        }
+      ],
+      "rationale": "The configuration explicitly disables TLS certificate verification."
+    },
+    {
+      "id": "tls-verification-enabled",
+      "category": "tls_and_configuration",
+      "expectedOutcome": "safe",
+      "checkId": "insecure_transport_configuration",
+      "files": {
+        "config/tls.yml": "tls_verify: true\n"
+      },
+      "expectedFindings": [],
+      "rationale": "TLS certificate verification is explicitly enabled."
+    },
+    {
+      "id": "config-wildcard-cors",
+      "category": "tls_and_configuration",
+      "expectedOutcome": "vulnerable",
+      "checkId": "dangerous_application_configuration",
+      "files": {
+        "config/cors.json": "{\n  \"cors\": { \"origin\": \"*\" }\n}\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-CFG-001",
+          "file": "config/cors.json",
+          "line": 2,
+          "identityStatus": "unverified",
+          "identityUnverifiedReason": "Configuration findings do not expose a stable AST sink span.",
+          "evidenceContains": "CORS allowed origin=*"
+        }
+      ],
+      "rationale": "The supported configuration pattern explicitly permits all CORS origins."
+    },
+    {
+      "id": "config-debug-in-production",
+      "category": "tls_and_configuration",
+      "expectedOutcome": "vulnerable",
+      "checkId": "dangerous_application_configuration",
+      "files": {
+        "config/app.yml": "environment: production\ndebug: true\n"
+      },
+      "expectedFindings": [
+        {
+          "ruleId": "LUM-CFG-002",
+          "file": "config/app.yml",
+          "line": 2,
+          "identityStatus": "unverified",
+          "identityUnverifiedReason": "Configuration findings do not expose a stable AST sink span.",
+          "evidenceContains": "production environment with DEBUG=true"
+        }
+      ],
+      "rationale": "The same configuration declares production and enables debug mode."
+    }
+  ]
+}
